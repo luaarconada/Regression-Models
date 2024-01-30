@@ -1,0 +1,329 @@
+---
+title: "Lab1: Car prices"
+output: html_document
+date: ""
+---
+
+# Introduction
+
+A Chinese automobile company Geely Auto aspires to enter the US market by setting up their manufacturing unit there and producing cars locally to give competition to their US and European counterparts.
+
+They have contracted an automobile consulting company to understand the factors on which the pricing of cars depends. Specifically, they want to understand the factors affecting the pricing of cars in the American market, since those may be very different from the Chinese market. Essentially, the company wants to know:
+
+1)  Which variables are significant in predicting the price of a car
+2)  How well those variables describe the price of a car
+
+Based on various market surveys, the consulting firm has gathered a large dataset of different types of cars across the Americal market.
+
+## Goal
+
+You are required to model the price of cars with the available independent variables. It will be used by the management to understand how exactly the prices vary with the independent variables. They can accordingly manipulate the design of the cars, the business strategy etc. to meet certain price levels. Further, the model will be a good way for the management to understand the pricing dynamics of a new market.
+
+## Data Preparation
+
+There is a variable named CarName which is comprised of two parts - the first word is the name of 'car company' and the second is the 'car model'. For example, chevrolet impala has 'chevrolet' as the car company name and 'impala' as the car model name. You need to consider only company name as the independent variable for model building.
+
+```{r, message=FALSE,warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(plotly)
+library(data.table)
+library(GGally)
+library(tidymodels)
+library(car)
+library(scales)
+library(MASS)
+library(lmtest)
+
+car_data <- fread("CarPrice.csv")
+```
+
+The `fread` function is similar to `read.table` but faster and more convenient. All controls such as `sep`, `colClasses` and `nrows` are automatically detected.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+rmarkdown::paged_table(car_data)
+```
+
+The data has 205 rows and 26 columns. `Car_ID` is a unique identifier for each car, so we can ignore it. Our target variable is the `price`. We will use other variable except the `CarName`.
+
+Before we continue, our initial task is to ensure the cleanliness and utility of our data. If you look closer, you will identify certain issues with the categorical variables, such as the `cylindernumber` variable shown below.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+car_data %>% count(cylindernumber)
+```
+
+There are several categories with only 1 instance, 3 cylindernumber and 12 cylindernumber. This information may be not be too useful and we can consider them as a noise. Furthermore, this will cause problems during train-test data split, where we will not find same category in either one of the dataset. Same problem can be found in other variables such as `fuelsystem`, and `enginetype`. So, we need to filter and select categories with number of instances \> 3.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+# remove unused variables
+car_data2 <- car_data[,-c(1,3)] # CarName and Car_ID
+# remove cylinder number with only 1 instance
+cylinder <- car_data2 %>% count(cylindernumber) %>% filter(n > 3)
+car_data2 <- car_data2[car_data2$cylindernumber %in% cylinder$cylindernumber, ]
+car_data2$cylindernumber <- factor(car_data2$cylindernumber, unique(car_data2$cylindernumber))
+
+# remove fueltype with only 1 instance
+fuel <- car_data2 %>% count(fuelsystem) %>% filter(n > 3)
+car_data2 <- car_data2[car_data2$fuelsystem %in% fuel$fuelsystem, ]
+car_data2$fuelsystem <- factor(car_data2$fuelsystem, unique(car_data2$fuelsystem))
+
+# remove engine type with 1 instance
+engine <- car_data2 %>% count(enginetype) %>% filter(n > 3)
+car_data2 <- car_data2[car_data2$enginetype %in% engine$enginetype, ]
+car_data2$enginetype <- factor(car_data2$enginetype, unique(car_data2$enginetype))
+
+# transform character into factor
+car_data <- car_data %>% mutate_if(~is.character(.), ~as.factor(.))
+
+
+```
+
+Symboling is a categorical variable which has been treeted as a numeric int64 type variable. Let's convert the symboling variable. Here Symboling is the assigned insurance risk rating: A value of +3 indicates that the auto is risky, -3 that it is probably pretty safe. Let's make the category clear by classifying based on risk
+
+-   negative values as **safe**
+-   0, 1 as **moderate**
+-   2,3 as **risky**
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+car_data3=car_data2%>%
+    mutate(symboling = factor(ifelse(symboling < 0, "safe",
+           ifelse(symboling >= 0 & symboling <= 1, "moderate",
+              ifelse(symboling >= 2, "risky", NA)))))
+```
+
+# Exploratory data analysis
+
+Now we explore the variables to see if there are any pattern that can indicate any kind of correlation between variables.
+
+Find the Pearson correlation between features.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggcorr(car_data3, label = TRUE, label_size = 2.9, hjust = 1, digits =3,layout.exp = 2)
+```
+
+There is some obvious multicollinearity going on between predictor variables:
+
+-   carlength with wheelbase, carwidth, curbweight
+-   curbweight with enginesize, carlength, carwidth, wheelbase
+-   enginesize with horsepower, crubweight and dimestions of car
+-   highway and city mpg's are highly correlated with a pearson r cofficient of 0.97.
+
+We also do a pairs lot of the continuous variables:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggpairs(car_data3, columns=c(8:12,15,17:24))
+```
+
+It is important to look at the final row where we have the lot of each predictor versus the response variable (do all the relationships linear?)
+
+Further plots can be done relatining the response to the categorical predictors, for example:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggplot(car_data3, aes(y = price, x = symboling)) +scale_x_discrete("Symboling") + 
+        scale_y_continuous("Price") + geom_boxplot(outlier.color="red") + theme(axis.text.x = element_text(size=20))+ggtitle("Price w.r.t Symboling") 
+```
+
+# Modeling
+
+Before we make the model, we need to split the data into train dataset and test dataset. We will use the train dataset to train the linear regression model. The test dataset will be used as a comparasion and see if the model get overfit and can not predict new data that hasn't been seen during training phase. We will 70% of the data as the training data and the rest of it as the testing data.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+
+set.seed(123)
+samplesize <- round(0.7 * nrow(car_data3), 0)
+index <- sample(seq_len(nrow(car_data3)), size = samplesize)
+
+data_train <- car_data3[index, ]
+data_test <- car_data3[-index, ]
+```
+
+We can't use `regsubsets` because it only works when all variables are continuous, therefore, we will use the function `stepAIC`in the package `MASS`
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+mod0=lm(price ~ ., data=data_train)
+mod0.aic=stepAIC(mod0, direction="both",trace=FALSE)
+#If we want to use BIC as we wouls write:
+#mod0.bic=stepAIC(mod0, direction="both",trace=FALSE,k=log(nrow(data_train)))
+mod0.aic$coefficients
+```
+
+Above we can see the coefficients from the best model.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+mod1=lm(formula(mod0.aic),data=data_train)
+
+summary(mod1)
+```
+
+For brevity, we are not checking for interactions between categorical and continuous variables, but this should be done.
+
+# Checking model assumptions
+
+## Multicolinearity
+
+Maybe the model chosen by the function `stepAIC` may contain highly correlated predictors, so we can use the variance inflation factor to check this (remember that a value of VIF larger than $10$ is problematic. We use the function `vif` in the `car` package:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+
+vif(mod1)
+```
+
+In the first column the VIF is not taking into account the fact that some variables (categorical have more than one parameter associated), so we can use the the second column, but, due to the fact that it is displaying GVIF\^(1/2\*Df), we have to compare with $\sqrt{10}\approx$ 3.2 The largest value above 3.2 is 4.43 which corresponds to `enginesize`, so we drop this predictor:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+mod2=update (mod1,.~.-enginesize)
+vif(mod2)
+```
+
+Now we can decide to drop `curbweight`or leave it. I decided to leave all the others, but it is OK if you drop it.
+
+## Linearity
+
+The linear regression model assumes that there is a straight-line relationship between the predictors and the response. If the true relationship is far from linear, then virtually all of the conclusions that we draw from the fit are suspect. In addition, the prediction accuracy of the model can be significantly reduced.
+
+Residual plots are a useful graphical tool for identifying non-linearity. If there is a pattern in the residual plot, it means that the model can be further improved upon or that it does not meet the linearity assumption. The plot shows the relationship between the residuals/errors with the predicted/fitted values.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+resact <- data.frame(residual = mod2$residuals, fitted = mod2$fitted.values)
+
+resact %>% ggplot(aes(fitted, residual)) + geom_point() + geom_smooth() + geom_hline(aes(yintercept = 0)) + 
+    theme(panel.grid = element_blank(), panel.background = element_blank())
+```
+
+There is a pattern in the data, the residuals have become more negative as the fitted values increase before increased again. The pattern indicate that our model may not be linear enough.
+
+## Normality
+
+The second assumption in linear regression is that the residuals follow normal distribution. We can easily check this by using the Saphiro-Wilk normality test ans a quantile plot.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+shapiro.test(mod2$residuals)
+qqnorm(residuals(mod2))
+qqline(residuals(mod2))
+```
+
+So data do not follow a normal distribution
+
+## Heterocedasticity
+
+Heterocedasticity means that the variances of the error terms are non-constant. One can identify non-constant variances in the errors from the presence of a funnel shape in the residual plot when plotting fitted values versus residuals.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+resact %>% ggplot(aes(fitted, residual)) + geom_point() + theme_light() + geom_hline(aes(yintercept = 0))
+
+```
+
+We can observe that on lower fitted values, the residuals are concentrated around the value of 0. As the fitted value increases, the residuals are also got bigger. Second way to detect heterocesdasticity is using the Breusch-Pagan test, with null hypothesis is there is no heterocesdasticity
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+bptest(mod2)
+
+```
+
+So, the data are not homocedastic.
+
+# Model tunning
+
+Since the assumptions are not satisfied we need to explore possible transformations of the response variable:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+mod2.boxcox=a=boxcox(mod2,lambda = seq(-1, 2, length.out = 10))
+
+mod2.boxcox$x[which.max(mod2.boxcox$y)]
+```
+
+Modify the variable
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+new.price=(car_data3$price^0.06-1)/0.06
+car_data4= car_data3%>%mutate(price=new.price)
+```
+
+Do train and test again:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+
+set.seed(123)
+samplesize <- round(0.7 * nrow(car_data4), 0)
+index <- sample(seq_len(nrow(car_data4)), size = samplesize)
+
+data_train4 <- car_data4[index, ]
+data_test4 <- car_data4[-index, ]
+```
+
+Fit the model:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+mod3=lm(formula(mod2), data=data_train4)
+```
+
+Now you can do the corresponding plots and test and you will see that assumptions are satisfied
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+resact <- data.frame(residual = mod3$residuals, fitted = mod3$fitted.values)
+
+resact %>% ggplot(aes(fitted, residual)) + geom_point() + geom_smooth() + geom_hline(aes(yintercept = 0)) + 
+    theme(panel.grid = element_blank(), panel.background = element_blank())
+```
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+shapiro.test(mod3$residuals)
+qqnorm(residuals(mod3))
+qqline(residuals(mod3))
+```
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+bptest(mod3)
+
+```
+
+# Model performance
+
+The performance of our model (how well our model predict the target variable) can be calculated using root mean squared error (RMSE). The RMSE is better than MAE or mean absolute error, because RMSE squared the difference between the actual values and the predicted values, meaning that prediction with higher error will be penalized greatly. This metric is often used to compare two or more alternative models, even though it is harder to interpret than MAE. We can use the `RMSE` functions from `caret` package (pay attention because you have to reverse the transformation):
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+
+# RMSE of train dataset
+RMSE(pred = (mod3$fitted.values*0.06+1)^(1/0.06), obs = (data_train4$price*0.06+1)^(1/0.06))
+
+# RMSE in the test dataset
+
+mod3_pred <- predict(mod3, newdata = data_test4)
+RMSE(pred = (mod3_pred*0.06+1)^(1/0.06), obs = (data_test4$price*0.06+1)^(1/0.06))
+
+```
+
+The accuracy of the model in predicting the car price is measured with RMSE, with training data has RMSE of 1980.464 and testing data has RMSE of 3081.996, suggesting that our model may overfit the traning dataset.
+
+If we compare with a the model without one of the variables (for example `stroke`):
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+
+mod0.data4=update(mod3,.~.-stroke )
+
+# RMSE of train dataset
+RMSE(pred = (mod0.data4$fitted.values*0.06+1)^(1/0.06), obs = (data_train4$price*0.06+1)^(1/0.06))
+
+# RMSE in the test dataset
+
+mod.data4_pred <- predict(mod0.data4, newdata = data_test4)
+RMSE(pred = (mod.data4_pred*0.06+1)^(1/0.06), obs = (data_test4$price*0.06+1)^(1/0.06))
+
+```
+
+We see that the performance is worst.

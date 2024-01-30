@@ -1,0 +1,397 @@
+---
+title: "Lab2: credit card default"
+output: html_document
+date: ""
+---
+
+
+# Introduction
+
+
+Think of yourself as a lead data scientist employed at a large bank. You have been assigned to predict whether a particular customer will default on their payment next month or not. The result is an extremely valuable piece of information for the bank to take decisions regarding offering credit to its customers and could massively affect the bank’s revenue. Therefore, your task is very critical.
+
+ 
+
+The dataset consists of 25 variables, which include ID, limit balance, sex, education, marriage, age, 6 months (April 2005 - September 2005) of pay delay status, 6 months of bill statement, 6 months of previous payment and lastly whether the client defaulted in the next month or not.  
+
+ 
+
+## Data Preparation
+
+
+
+```{r, message=FALSE,warning=FALSE}
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(mice)
+library(lattice)
+library(reshape2)
+library(DataExplorer)
+library(GGally)
+library(MASS)
+library(ROCR)
+
+data <- read.csv('UCI_Credit_Card.csv', sep=",",header = TRUE)
+head(data)
+```
+
+
+Here is the description of the variables:
+
+- ID: ID of each client
+- LIMIT_BAL: Amount of given credit in NT dollars (includes individual and
+family/supplementary credit
+- SEX: Gender (1=male, 2=female)
+- EDUCATION: (1=graduate school, 2=university, 3=high school, 4=others, 5=unknown,
+6=unknown)
+- MARRIAGE: Marital status (1=married, 2=single, 3=others)
+- AGE: Age in years
+- PAY_0: Repayment status in September (-1=pay duly, 1=payment delay for one
+month, 2=payment delay for two months, . . . 8=payment delay for eight months, 9=payment
+delay for nine months and above)
+- PAY_2: Repayment status in August (scale same as above)
+- PAY_3: Repayment status in July
+- PAY_4: Repayment status in June
+- PAY_5: Repayment status in May
+- PAY_6: Repayment status in April
+- BILL_AMT1: Amount of bill statement in September
+- BILL_AMT2: Amount of bill statement in August, 2005 (NT dollar)
+- BILL_AMT3: Amount of bill statement in July, 2005 (NT dollar)
+- BILL_AMT4: Amount of bill statement in June, 2005 (NT dollar)
+- BILL_AMT5: Amount of bill statement in July, 2005 (NT dollar)
+- BILL_AMT6: Amount of bill statement in August, 2005 (NT dollar)
+- PAY_AMT1: Amount of previous payment in September, 2005 (NT dollar)
+- PAY_AMT2: Amount of previous payment in August, 2005 (NT dollar)
+- PAY_AMT3: Amount of previous payment in July, 2005 (NT dollar)
+- PAY_AMT4: Amount of previous payment in June, 2005 (NT dollar)
+- PAY_AMT5: Amount of previous payment in May, 2005 (NT dollar)
+- PAY_AMT6: Amount of previous payment in April, 2005 (NT dollar)
+- default.payment.next.month: Default payment (1=yes, 0=no)
+
+
+We need to define some variables as categorical,and we will give them more informative names
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+names <- c("ID", "given.credit", "Gender", "Education", "marital.status", "Age",
+"Pay_Delay_Sept", "Pay_Delay_Aug", "Pay_Delay_Jul",
+"Pay_Delay_Jun","Pay_Delay_May", "Pay_Delay_Apr",
+"Bill_Amt_Sept", "Bill_Amt_Aug", "Bill_Amt_Jul",
+"Bill_Amt_Jun", "Bill_Amt_May", "Bill_Amt_Apr",
+"Pay_Amt_Sept", "Pay_Amt_Aug", "Pay_Amt_Jul",
+"Pay_Amt_Jun", "Pay_Amt_May", "Pay_Amt_Apr",
+"Default_payment_next_month")
+names(data) <- names
+
+#changes gender, education and marital status to categorical
+data[3:5] <- lapply(data[3:5], as.factor)
+#changes pay_delay_sept - pay_delay_apr to categorical to spot for anomalies
+data[7:12] <- lapply(data[7:12], as.factor)
+data$Default_payment_next_month <- as.factor(data$Default_payment_next_month)
+
+# Check that variables are correctly defined:
+summary(data)
+```
+
+The last two categories of `Education` correspond with unknown answers, and category 0 has not been defined, so we will include these categories in category  4: *others*
+
+```{r, message=FALSE,warning=FALSE}
+data$Education[data$Education == 0] <- 4
+data$Education[data$Education == 5] <- 4
+data$Education[data$Education == 6] <- 4
+
+```
+
+Something similar happens with  `marital.status` which has a category 0 that hasn't been defined, we will include it in category 3: *others*
+
+
+```{r, message=FALSE,warning=FALSE}
+data$marital.status[data$marital.status == 0] <- 3
+```
+
+
+Finally, we remove the variable `ID`:
+
+```{r, message=FALSE,warning=FALSE}
+data<-data[,-1] 
+```
+
+# Exploratory data analysis
+
+
+When the response is binary it is always important to see the frequency of each category, to check for an extreme unbalanced situation
+
+```{r, message=FALSE,warning=FALSE}
+ggplot(data,aes(Default_payment_next_month))+geom_bar()+ggtitle("credit card default distribution")
+```
+
+In this case the 1's are $22\%$ and the 0's $ 78\%$, so, although it is not ideal we can proceed. 
+
+
+Now we explore the variables to see if there are any pattern that can indicate any kind of correlation between variables.
+
+Find the Pearson correlation between features.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggcorr(data, label = TRUE, label_size = 2.9, hjust = 1, digits =3,layout.exp = 2)
+```
+
+We can see a string correlation among the bills of all months
+
+We can carry out several plots like density plot for credit amount , histogram of age, several bar-plots for marital status and gender also dot-plots for Credit Amount versus Payment Statuses  and Bill Amounts 
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggplot(data,aes(x=given.credit,fill=Default_payment_next_month))+
+      geom_density(alpha=0.6,show.legend = T,color="blue")+
+      ggtitle("Density plot oh Credit Amount")+
+      xlab("Credit Amount")
+```
+
+
+So we can see that clients with relatively lower credit amount tend to be the defaulters
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggplot(data,aes(x=Age,fill=Default_payment_next_month))+
+  geom_histogram(show.legend = T,alpha=0.9)+
+  ggtitle("Age for different customers with respect to default")+
+  xlab("Age")
+```
+
+Customers with age between 20-35 have relatively higher number of defaults.
+
+
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggplot(data,aes(x=marital.status,group=Default_payment_next_month))+
+  geom_bar(show.legend = T,fill="lightblue")+
+  ggtitle("Default for different marital status")+
+  xlab("Marriage")+
+  facet_grid(~Default_payment_next_month)
+```
+
+The number of default is slightly higher for single customers
+
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggplot(data,aes(x=Gender,fill=Default_payment_next_month))+
+  geom_bar(aes(y=(..count..)/sum(..count..)), show.legend = T)+
+  ggtitle("Default for different gender")+
+  xlab("Gender")+
+  ylab("proportion")
+```
+
+Proportion of default is greater for female compared to male
+
+
+Now, we do s scatter plot of Limit Balance & Bill Amounts for one of the months (similar plots could be than for the others), colour coded in default payment status
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggplot(data,aes(x=given.credit,y=Bill_Amt_Sept,color=Default_payment_next_month))+
+                geom_point(show.legend = T)+
+                xlab("given credit")+
+                ylab("Amount of bill in September")
+```
+There seems to be more  a samll cluster of default customers in the lower range of Limit Balalace and Bill amounts.
+
+We make scatter plots of Repayment Status with Limit Balance, colour coded in default payment status.
+
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+ggplot(data,aes(x=Pay_Delay_Sept,y=given.credit,color=Default_payment_next_month,palette="jco"))+
+               geom_point(show.legend = T)+
+               xlab("repayment status in September")+
+               ylab("given credit")
+```
+
+As expected, most of the default customers have delays in their repayment status.
+
+
+ In summary: The density of credit amount is high in the range 0 to 250000 for the clients with default of payment. Therefore, clients with relatively lower credit are more likely to be default. Similarly, from the histogram of age it is clear that most of the default clients are in the age bracket 20 to 40. The proportions of females are greater than that of males for default and non- default clients. In case of defaults the no of married clients and single clients are almost same but in case of non-default clients, unmarried clients comprehensively outnumber the married ones. The dot-plots of credit amount versus repayment statuses indicates that those who are allowed high amount of credit are able to clear their bills duly and clients with low credit amounts are the majority in defaults, which is expected. There is a kind of barrier at 500000 for credit amount and most of the clients are have allowed credit within the range 0 to 500000. Clients with positive repayment statuses are majority of defaults which is also a very obvious fact. 
+
+# Modeling
+
+We will use 70% of the data as the training data and the rest of it as the testing data.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+
+set.seed(666)
+samplesize <- round(0.8 * nrow(data), 0)
+index <- sample(seq_len(nrow(data)), size = samplesize)
+
+data_train <- data[index, ]
+data_test <- data[-index, ]
+```
+
+
+We will use the function `stepAIC`in the package `MASS`
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+mod0=glm(Default_payment_next_month ~ ., family="binomial",data=data_train)
+mod0.aic=stepAIC(mod0, direction="both",trace=FALSE)
+#If we want to use BIC as we wouls write:
+#mod0.bic=stepAIC(mod0, direction="both",trace=FALSE,k=log(nrow(data_train)))
+mod0.aic$coefficients
+```
+
+Let's test if the reduced model is better than the full one:
+
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+
+mod1=glm(formula(mod0.aic),data=data_train,family="binomial")
+
+anova(mod1,mod0,test="Chi")
+```
+
+As we can see, the reduced model fits the data better than the model with all predictors
+
+# Prediction 
+
+We check first the predictions  in the train data:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+pred.mod1.train<- predict(mod1, type="response")
+
+```
+(**IMPORTANT!!!**) You have to specify type="response" in order to get probability outcome, which is what we want. Otherwise, what it produces is the linear predictor term $\beta_0+\beta_1X_1+...$ 
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+pred <- prediction(pred.mod1.train, data_train$Default_payment_next_month)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+#Get the AUC
+unlist(slot(performance(pred, "auc"), "y.values"))
+```
+Be careful that the function `prediction()` is different from `predict()`. It is in Package `ROCR`, and is particularly used for preparing for ROC curve. This function basically calculates many confusion matrices with different cut-off probability. Therefore, it requires two vectors as inputs: predicted probability and observed response (0/1). The next line, `performance()` calculates TPR and FPR based all confusion matrices you get from previous step. Then you can simply draw the ROC curve, which is a curve of FPR vs. TPR. The last line is to get AUC (area under the curve).
+
+Now we check the out-of-sample prediction
+
+
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+pred.mod1.test<- predict(mod1 ,newdata=data_test,type="response")
+pred <- prediction(as.vector(pred.mod1.test),data_test$Default_payment_next_month)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+#Get the AUC
+unlist(slot(performance(pred, "auc"), "y.values"))
+```
+
+# Classification 
+
+In practice, people may be more interested in the classification results. But we have to define a cut-off probability first.
+
+These tables illustrate the impact of choosing different cut-off probability. Choosing a large cut-off probability will result in few cases being predicted as 1, and chossing a small cut-off probability will result in many cases being predicted as 1.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+table((pred.mod1.train > 0.9)*1)
+```
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+table((pred.mod1.train > 0.5)*1)
+```
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+table((pred.mod1.train > 0.2)*1)
+```
+
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+table((pred.mod1.train > 0.0001)*1)
+```
+
+## Naive choice of cut-off probability
+
+The simplest way is to choose the event proportion in training sample. This is roughly reasonable because the sample proportion is an estimate of mean probability of $Y=1$
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+pcut1<- mean(as.numeric(as.character(data_train$Default_payment_next_month)))
+```
+
+Based on this cut-off probability, we can obtain the binary prediction (predicted classification) and the confusion matrix
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+# get binary prediction
+class.mod1.train<- (pred.mod1.train>pcut1)*1
+# get confusion matrix
+table(data_train$Default_payment_next_month, class.mod1.train, dnn = c("True", "Predicted"))
+```
+
+Then it is easy to get different types of classification error rate, i.e., false positive rate (FPR), false negative rate (FNR), and overall misclassification rate (MR). Commonly, you can use overall MR as the cost (a criterion) to evaluate the model prediction.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+# (equal-weighted) misclassification rate
+MR<- mean(data_train$Default_payment_next_month!=class.mod1.train)
+# False positive rate
+FPR<- sum(data_train$Default_payment_next_month==0 & class.mod1.train==1)/sum(as.numeric(as.character(data_train$Default_payment_next_month)))
+# False negative rate (exercise)
+FNR<- sum(data_train$Default_payment_next_month==1 & class.mod1.train==0)/sum(data_train$Default_payment_next_month==0)
+```
+
+## Determine Optimal cut-off Probability using Grid Search Method
+
+You need to search all possible p-cut to find the one that provides minimum cost. The first step is to define a symmetric/asymmetric cost function (misclassification rate), as a function of cut-off.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+# define a cost function with input "obs" being observed response 
+# and "pi" being predicted probability, and "pcut" being the threshold
+# weight1   define the weight for "true=1 but pred=0" (FN)
+ #   weight0 define the weight for "true=0 but pred=1" (FP)
+costfunc = function(obs, pred.p, pcut,weight1,weight0){
+    c1 = (obs==1)&(pred.p<pcut)    # count for "true=1 but pred=0"   (FN)
+    c0 = (obs==0)&(pred.p>=pcut)   # count for "true=0 but pred=1"   (FP)
+    cost = mean(weight1*c1 + weight0*c0)  # misclassification with weight
+    return(cost) # you have to return to a value when you write R functions
+} 
+```
+
+Next, define a sequence of probability (you need to search the optimal p-cut from this sequence)
+
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+p.seq = seq(0.01, 1, 0.01) 
+
+```
+
+Then, calculate the cost for each probability in the sequence p.seq (we use a weight1=5, weight0=1, so we asume that getting a FN is much worse thatn getting a FP)
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+cost = rep(0, length(p.seq))  
+for(i in 1:length(p.seq)){ 
+    cost[i] = costfunc(obs = data_train$Default_payment_next_month, pred.p = pred.mod1.train, pcut = p.seq[i],weight1=5,weight0=1)  
+} # end of the loop
+
+
+plot(p.seq, cost)
+
+optimal.pcut.mod1 = p.seq[which(cost==min(cost))]
+```
+
+Finally we calculate MR, FPR, FNR and cost based on the optimal cut-off:
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+# step 1. get binary classification
+class.mod1.train.opt<- (pred.mod1.train>optimal.pcut.mod1)*1
+# step 2. get confusion matrix, MR, FPR, FNR
+table(data_train$Default_payment_next_month, class.mod1.train.opt, dnn = c("True", "Predicted"))
+
+```
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE}
+MR<- mean(data_train$Default_payment_next_month!= class.mod1.train.opt)
+FPR<- sum(data_train$Default_payment_next_month==0 & class.mod1.train.opt==1)/sum(data_train$Default_payment_next_month==0)
+FNR<- sum(data_train$Default_payment_next_month==1 & class.mod1.train.opt==0)/sum(data_train$Default_payment_next_month==1)
+cost<- costfunc(obs = data_train$Default_payment_next_month, pred.p = pred.mod1.train, pcut = optimal.pcut.mod1,weight0=5,weight1=1)  
+
+```
+
+# Exercise
+
+Everything you have done about classification so far is for training sample. Now do it for testing sample. Keep in mind the principle, testing sample is only used for evaluating your model’s prediction accuracy! NO NEED TO CHOOSE CUT-OFF PROBABILITY in this stage.
+
+- Calculate MR, FPR, FNR based on the optimal cut-off you get from training sample with weights (5:1)
+
+- Calculate asymetric cost based on the optimal cut-off you get from training sample with weights (5:1)
+
+- Calculate above statistics based on the cut-off you get from training sample with symmetric weights (1:1)

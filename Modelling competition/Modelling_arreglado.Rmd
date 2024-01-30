@@ -1,0 +1,1155 @@
+---
+title: 'Modelling Competition: House Prices'
+author: Lúa Arconada, Nuria Errasti, Alejandro Macías, Carlos Martin, Iván Samuel
+  Orta
+date: "23/12/2023"
+output:
+  pdf_document: default
+  word_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(MASS)
+library(car)
+library(dplyr)
+library(leaps)
+library(pander)
+library(DescTools)
+library(glmnet)
+library(UsingR)
+library(GGally)
+library(leaps)
+library(caret)
+library(RANN)
+library(readr)
+library(class)
+```
+
+## Introduction
+
+The purpose of this report is to outline the process of constructing a predictive model for house prices based on diverse characteristics such as bedrooms, electrical systems, and more. We'll start by detailing the data preprocessing steps, leading to model fitting and prediction. Throughout the report, we'll also explore additional interesting aspects like the most influential variables and characteristics of the most expensive and least expensive houses.
+
+
+## Data preparation and exploratory data analysis
+
+First of all, upon loading the datasets 'data_train' and 'data_test,' we observed that the variable 'Id' serves as a unique identifier for each observation, rendering it irrelevant for our analysis and being deleted. Our target variable, 'SalePrice,' has been transformed using a logarithmic function as requested.
+
+```{r include=FALSE}
+data_train=read.csv('train.csv')
+data_test=read.csv('test.csv')
+data_train<- data_train[,-1]
+data_test<- data_test[,-1] 
+data_train$SalePrice=log(data_train$SalePrice)
+```
+
+Let's investigate whether there are any discernible patterns that might suggest correlations between variables. We'll calculate the Pearson correlation among the features.
+
+```{r, cache=FALSE, message=FALSE,warning=FALSE,echo=FALSE}
+ggcorr(data_train, label = TRUE, label_size = 2.2, hjust = 1, digits =4,layout.exp = 2)
+```
+
+In the graph, we can observe a notable correlation between certain variables and the response variable, indicating potential multicollinearity among them. Notably, OverallQual, GrLivArea, GarageCars, and GarageArea exhibit strong correlations with SalePrice, suggesting their importance in the model.
+
+Additionally, other significant correlations include:
+
+-YearBuilt with GarageYrBlt
+
+-TotalBsmtSF with X1stFlrSF
+
+-GrLivArea with TotRmsAbvGrd and X2ndFlrSF
+
+-BedroomAbvGr with TotRmsAbvGrd
+
+-GarageCars with GarageArea
+
+We've conducted a summary analysis of our datasets and identified numerous issues. Moving forward, the solutions we'll present apply to both the train and test datasets. Let's further explore these problems and the corresponding resolutions.
+
+```{r,include=FALSE}
+summary(data_train)
+summary(data_test)
+```
+
+1- The variable 'Utilities' has only two values among the four available, with one of them represented by only a single observation. Consequently, this variable has been removed as it won't contribute effectively to the model.
+
+```{r include=FALSE}
+data_train<- data_train[,-9] 
+data_test<- data_test[,-9]
+```
+
+2-We encountered several discrete variables with limited values, which could impact prediction accuracy. For instance, houses seldom have more than three basement full bathrooms. Assuming that the precise count beyond three might not significantly influence the price, we categorized these variables. Houses with over three bathrooms were grouped under a new category labeled 'more.' This approach was extended to similar variables like BsmtFullBath, HalfBath, KitchenAbvGr, among others. Additionally, in preparation for future predictions, we converted character variables into factors.
+    
+```{r include=FALSE}
+character_columns <- sapply(data_train, is.character)
+character_columns_test = sapply(data_test, is.character)
+data_train[, character_columns] <- lapply(data_train[, character_columns], as.factor)
+data_test[, character_columns_test] <- lapply(data_test[, character_columns_test], as.factor)
+
+#Categorize discrete variables taking into account both training and testing sets
+data_train$MSSubClass <- factor(data_train$MSSubClass, 
+                                levels = c(20,30,40,45,50,60,70,75,80,85,90,120,150,
+                                160,180,190), labels = c(20,30,40,45,50,60,70,75,80,
+                                85,90,120,150,160,180,190))
+data_test$MSSubClass <- factor(data_test$MSSubClass, 
+                               levels = c(20,30,40,45,50,60,70,75,80,85,90,120,150,
+                                160,180,190), labels = c(20,30,40,45,50,60,70,75,80,
+                                85,90,120,150,160,180,190))
+
+data_train$OverallQual<- as.factor(data_train$OverallQual)
+data_test$OverallQual<-as.factor(data_test$OverallQual)
+
+data_train$OverallCond<-as.factor(data_train$OverallCond)
+data_test$OverallCond<-as.factor(data_test$OverallCond)
+
+data_train$BsmtFullBath<-cut(data_train$BsmtFullBath, breaks = c(-1,0, 1, Inf),
+                             labels=c("0", "1","2 or more"))
+data_test$BsmtFullBath<-cut(data_test$BsmtFullBath, breaks = c(-1,0, 1, Inf),
+                            labels=c("0", "1","2 or more"))
+
+data_train$BsmtHalfBath<-cut(data_train$BsmtHalfBath, breaks=c(-1,0,Inf), labels=
+                               c("0", "1 or more"))
+data_test$BsmtHalfBath<-cut(data_test$BsmtHalfBath, breaks=c(-1,0,Inf), labels= 
+                              c("0", "1 or more"))
+
+data_train$FullBath<-cut(data_train$FullBath, breaks = c(-1,0,1,2,Inf), labels =
+                           c("0","1","2","3 or more"))
+data_test$FullBath<-cut(data_test$FullBath,breaks = c(-1,0,1,2,Inf),labels =
+                          c("0","1","2","3 or more") )
+
+data_train$HalfBath<-cut(data_train$HalfBath, breaks = c(-1,0,Inf), labels=
+                           c("0", "1 or more"))
+data_test$HalfBath<-cut(data_test$HalfBath, breaks = c(-1,0,Inf), labels=
+                          c("0", "1 or more"))
+
+data_train$BedroomAbvGr<-cut(data_train$BedroomAbvGr, breaks = c(-1,1,2,3,4,Inf),
+                             labels = c("less than 2", "2", "3", "4", "5 or more"))
+data_test$BedroomAbvGr<-cut(data_test$BedroomAbvGr,breaks = c(-1,1,2,3,4,Inf), 
+                            labels = c("less than 2", "2", "3", "4", "5 or more"))
+
+data_train$KitchenAbvGr<-cut(data_train$KitchenAbvGr, breaks = c(-1,1, Inf),
+                             labels = c("1 or less", "2 or more"))
+data_test$KitchenAbvGr<-cut(data_test$KitchenAbvGr,breaks = c(-1,1,Inf), 
+                            labels = c("1 or less", "2 or more"))
+
+data_train$TotRmsAbvGrd<-cut(data_train$TotRmsAbvGrd,  breaks =
+                               c(-1,3,4,5,6,7,8,9,10,Inf),labels = c("3 or less",
+                              "4", "5", "6", "7", "8","9", "10", "11 or more"))
+data_test$TotRmsAbvGrd<-cut(data_test$TotRmsAbvGrd,breaks =
+                              c(-1,3,4,5,6,7,8,9,10,Inf), labels = c("3 or less",
+                              "4", "5", "6", "7", "8", "9", "10", "11 or more"))
+
+data_train$Fireplaces<-cut(data_train$Fireplaces, breaks = c(-1,0,1,2,Inf), 
+                           labels = c("0","1", "2","3 or more"))
+data_test$Fireplaces<-cut(data_test$Fireplaces,breaks = c(-1,0,1,2,Inf), 
+                          labels = c("0","1", "2","3 or more"))
+
+data_train$GarageCars<-cut(data_train$GarageCars, breaks = c(-1,0,1,2,Inf), 
+                           labels = c("0","1", "2","3 or more"))
+data_test$GarageCars<-cut(data_test$GarageCars, breaks = c(-1,0,1,2,Inf), 
+                          labels = c("0","1", "2","3 or more"))
+
+data_train$MoSold<-as.factor(data_train$MoSold)
+data_test$MoSold<-as.factor(data_test$MoSold)
+
+data_train$YrSold<-as.factor(data_train$YrSold)
+data_test$YrSold<-as.factor(data_test$YrSold)
+
+
+
+```
+
+3-We've identified various missing values that require specific treatment as they differ in nature and cannot be uniformly addressed.
+
+Initially, some NA's in certain variables don't represent true missing data but rather indicate a specific category (such as in 'GarageQual' where NA signifies 'No Garage'). To manage these, we transformed the NA category into 'Doesn't have.'
+
+Moving on to 'GarageYrBlt,' the NA values signify instances where a garage was never constructed. In such cases, we plan to categorize the variable into decades, assigning NA's to a new category labeled 'Doesn't have.'
+
+The remaining NA's are legitimate missing values. In our training dataset, these amount to over 200, a substantial count. To address these, we've developed a specialized algorithm inspired by KNN but tailored to suit the unique nature of our dataset.
+
+```{r include=FALSE}
+#Variables with NAs, that in reality are not NA's
+NAs<- c("Alley", "BsmtQual","BsmtCond","BsmtExposure","BsmtFinType1",
+        "BsmtFinType2","FireplaceQu","GarageType","GarageFinish","GarageQual",
+        "GarageCond","PoolQC","Fence","MiscFeature")
+
+for (i in NAs){
+  data_train[[i]]<- ifelse(is.na(data_train[[i]]), "Doesn't have", data_train[[i]])
+  data_test[[i]]<-ifelse(is.na(data_test[[i]]), "Doesn't have", data_test[[i]])
+}
+
+data_train$Alley=as.factor(data_train$Alley)
+data_test$Alley=as.factor(data_test$Alley)
+```
+
+
+
+```{r include=FALSE}
+#Solve the problem with GarageYrBlt variable
+breaks <- c(seq(1900, 2000, 10), Inf)
+labels <- paste(seq(1900, 1990, 10), seq(1909, 1999, 10), sep = "-")
+labels <- c(labels, "2000-2010")
+# Create a new categorical variable for GarageYrBlt
+data_train$GarageYrBlt <- cut(data_train$GarageYrBlt, breaks = breaks, 
+                              labels = labels, include.lowest = TRUE,
+                              right = FALSE)
+# Add "Doesn't have" to the factor levels
+levels(data_train$GarageYrBlt) <- c(levels(data_train$GarageYrBlt), "Doesn't have")
+# Assign "Doesn't have" category to missing values  
+data_train$GarageYrBlt[is.na(data_train$GarageYrBlt)] <-"Doesn't have"
+```
+
+```{r,include=FALSE}
+#Solve the problem with GarageYrBlt variable
+breaks <- c(seq(1900, 2000, 10), Inf)
+labels <- paste(seq(1900, 1990, 10), seq(1909, 1999, 10), sep = "-")
+labels <- c(labels, "2000-2010")
+# Create a new categorical variable for GarageYrBlt
+data_test$GarageYrBlt <- cut(data_test$GarageYrBlt, breaks = breaks, 
+                              labels = labels, include.lowest = TRUE,
+                              right = FALSE)
+# Add "Doesn't have" to the factor levels
+levels(data_test$GarageYrBlt) <- c(levels(data_test$GarageYrBlt), "Doesn't have")
+# Assign "Doesn't have" category to missing values  
+data_test$GarageYrBlt[is.na(data_test$GarageYrBlt)] <-"Doesn't have"
+```
+
+We've come across a substantial number of variables, totaling 79, and a significant portion of these variables are now categorical (57). This presented an opportunity for us to provide coherent values for the missing entries (NAs) and to correct errors in both train and test data sets. We've devised a program that implements a comparative approach. For each observation featuring an NA within a particular variable, it compares this specific observation with all others lacking an NA in the same variable.
+
+Through this process, it evaluates the similarity of categorical variables among observations. Computes the number of identical categories for each observation concerning other categorical variables. The rationale behind this approach lies in the assumption that if 'closest' observations exhibit numerous identical categories, it's possible that these houses share similar properties. Consequently, their unknown values might also align closely. Therefore, taking the mean for numerical values or mode for categorical values of these similar observations can potentially lead to accurate predictions for the NA values. This approach bears similarity to KNN but capitalizes on the abundance of categorical values available to us. We have considered  selecting as  closest observations, (taking 'n' as the maximum number of coincidences among all observations, those with 'n', 'n-1', and 'n-2' matches).
+
+Let's proceed to observe the performance of the algorithm:
+
+```{r include=FALSE,eval=FALSE}
+#Imput the NA's found in the numeric variables with our developed program
+#lists created are just for analyzing if this model seems good or not
+#they are not part of the model
+variables_con_NA <- colSums(is.na(data_train)) > 0
+variables_con_NA <- names(variables_con_NA)[variables_con_NA]
+numerical_vars <- names(data_train)[sapply(data_train, is.numeric)]
+multicategorical_vars <- names(data_train)[sapply(data_train, function(x) is.factor(x) && length(levels(x)) >=2 )]
+lista=list()
+lista_num_obs=list('número observaciones cogidas')
+lista_proporcion_moda=list('proporcion de veces que aparece la moda de las seleccionadas')
+lista_terceras_coincidencias=list()
+lista_rango_media=list('rango valores de las seleccionadas')
+for (variable in variables_con_NA ) {
+ 
+  lista=append(lista,variable)
+  lista_num_obs=append(lista_num_obs,variable)
+  lista_terceras_coincidencias=append(lista_terceras_coincidencias,variable)
+  lista_rango_media=append(lista_rango_media,variable)
+  lista_proporcion_moda=append(lista_proporcion_moda,variable)
+  observaciones_con_NA <- which(is.na(data_train[[variable]]))
+  
+  for (observacion in observaciones_con_NA) {
+    conteo_categorias <- numeric()
+    
+    for (i in 1:nrow(data_train)) {
+      
+      if (!(i %in% observaciones_con_NA))  {
+        categorias_en_comun <- sum(data_train[i, multicategorical_vars] == data_train[observacion, multicategorical_vars], na.rm = TRUE)
+        
+        conteo_categorias[i] <- categorias_en_comun
+        
+        
+      }
+      else {
+        conteo_categorias[i]=0
+        
+      }
+      
+    }
+    
+    
+   
+    indices_maximos <- which(conteo_categorias == max(conteo_categorias))
+    frecuencias <- table(electrical_values)
+    indices_segundos_maximos=which(conteo_categorias == max(conteo_categorias)-1)
+    indices_terceros_maximos=which(conteo_categorias == max(conteo_categorias)-2)
+    variable_values=data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable]
+    frecuencias <- table(variable_values)
+    moda <- names(frecuencias)[which.max(frecuencias)]
+    n=length(indices_maximos)+length(indices_segundos_maximos)+length(indices_terceros_maximos)
+    lista_num_obs=append(lista_num_obs,n)
+    lista_terceras_coincidencias=append(lista_terceras_coincidencias,max(conteo_categorias)-2)
+    if(variable %in% multicategorical_vars){
+      data_train[observacion,variable]=moda
+      lista=append(lista,observacion)
+      lista=append(lista,'prediccion_categorica')
+      lista=append(lista,n)
+      lista_proporcion_moda=append(lista_proporcion_moda,max(frecuencias)/n)
+      
+    } 
+    else{
+      data_train[observacion,variable]=round(mean(data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable]))
+      lista=append(lista,observacion)
+      lista=append(lista,'prediccion_numerica')
+      lista=append(lista,data_train[observacion,variable])
+      lista=append(lista,length(indices_maximos)+length(indices_segundos_maximos)+length(indices_terceros_maximos))
+      lista=append(lista,'rango valores  prediccion con la media:')
+      minimo=min(data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable])
+      maximo=max(data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable])
+      rango=maximo-minimo
+      lista_rango_media=append(lista_rango_media,rango)
+    }
+      
+      
+      
+    
+    
+    
+    
+  
+    
+  }
+}
+
+
+```
+
+
+
+At first glance, one might assume that considering only matches with n, n-1, and n-2 similarities isn't sufficient. However, upon analysis, we observed that this approach captures an acceptable number of 'close' observations. We illustrate this with the mean of the chosen observation for each predicted NA: 
+
+```{r,echo=FALSE}
+solo_numeros <- lista_num_obs[sapply(lista_num_obs, function(x) is.numeric(x))]
+media=mean(as.numeric(solo_numeros))
+cat('mean number of close observations chosen:',media)
+```
+
+Additionally, for each observation with an NA to be predicted, our selected close observations consistently exhibit numerous identical categories. Specifically, we observed:
+
+```{r,echo=FALSE}
+solo_numeros <- lista_terceras_coincidencias[sapply(lista_terceras_coincidencias, function(x) is.numeric(x))]
+minimo=min(as.numeric(solo_numeros))
+maximo=max(as.numeric(solo_numeros))
+media=mean(as.numeric(solo_numeros))
+cat('minimum number of coincidences:', minimo)
+cat(' maximum number of  coincidences:', maximo)
+cat(' mean number of  coincidences:', media)
+
+```
+
+When examining numerical variables for predictions, we compared the potential value range within the train dataset for a specific variable to the range of values among our selected close observations. Our analysis focused on 'LotFrontage' and 'MasVnrArea,' both featuring NAs. What we found was particularly insightful: houses sharing numerous identical categories exhibited notably smaller value ranges. We computed the interval length (from minimum to maximum values) and compared it to analogous intervals composed solely of our closest observations to the NA-filled observation. This analysis revealed that not only the mean length of these intervals but also the largest among them was significantly smaller. This observation suggests that having identical categories may lead to closer values in numerical variables, indicating that our procedure may be more effective than simply taking the mean of all variable values.
+
+```{r,echo=FALSE}
+lot_rango=as.numeric(lista_rango_media[3:261])
+media=mean(lot_rango)
+maximo=max(lot_rango)
+rango=max(data_train[,"LotFrontage"])-min(data_train[,"LotFrontage"])
+cat('length interval of possible values in LotFrontage:',rango)
+cat(' mean length interval of possible values of close observations in LotFrontage:', media)
+cat('  length of largest interval of possible values of close observations in LotFrontage:', maximo)
+```
+```{r,echo=FALSE}
+masvnrarea_rango=as.numeric(lista_rango_media[264:271])
+media=mean(masvnrarea_rango)
+maximo=max(masvnrarea_rango)
+rango=max(data_train[,"MasVnrArea"])-min(data_train[,"MasVnrArea"])
+cat('length interval of possible values in MasVnrArea:',rango)
+cat(' mean length interval of possible values of close observations in MasVnrArea:', media)
+cat('  length of largest interval of possible values of close observations in MasVnrArea:', maximo)
+```
+
+A similar method was applied when predicting categorical values using the mode derived from the closest selected observations for each NA. Interestingly, a lot of  these observations consistently shared the same category in the variable of interest, even if this category wasn't prevalent when considering the entire dataset.
+
+Hence, our algorithm appears to be an intriguing approach to handling NAs. As a result, we implemented it on both the train and test datasets to address the missing values.
+
+
+
+```{r,include=FALSE,eval=FALSE}
+variables_con_NA <- colSums(is.na(data_test)) > 0
+variables_con_NA <- names(variables_con_NA)[variables_con_NA]
+numerical_vars <- names(data_test)[sapply(data_test, is.numeric)]
+multicategorical_vars <- names(data_test)[sapply(data_test, function(x) is.factor(x) && length(levels(x)) >=2 )]
+for (variable in variables_con_NA ) {
+  
+  
+  observaciones_con_NA <- which(is.na(data_test[[variable]]))
+  
+  for (observacion in observaciones_con_NA) {
+    conteo_categorias <- numeric()
+    
+    for (i in 1:nrow(data_train)) {
+      
+      if (!(i %in% observaciones_con_NA))  {
+        categorias_en_comun <- sum(data_train[i, multicategorical_vars] == data_test[observacion, multicategorical_vars], na.rm = TRUE)
+        
+        conteo_categorias[i] <- categorias_en_comun
+        
+        
+      }
+      else {
+        conteo_categorias[i]=0
+        
+      }
+      
+    }
+    
+    
+    # Encuentra las observaciones con la misma moda
+    indices_maximos <- which(conteo_categorias == max(conteo_categorias))
+    electrical_values=data_train[indices_maximos,variable]
+    frecuencias <- table(electrical_values)
+    indices_segundos_maximos=which(conteo_categorias == max(conteo_categorias)-1)
+    indices_terceros_maximos=which(conteo_categorias == max(conteo_categorias)-2)
+    electrical_values=data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable]
+    frecuencias <- table(electrical_values)
+    moda <- names(frecuencias)[which.max(frecuencias)]
+    if(variable %in% multicategorical_vars){
+      data_test[observacion,variable]=moda
+      
+    } 
+    else{
+      data_test[observacion,variable]=mean(data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable])
+      
+    }
+    
+    
+    
+    
+    
+    
+    
+    
+    
+  }
+}
+```
+
+
+
+
+```{r include=FALSE}
+sapply(data_train, function(x) sum(is.na(x)))
+sapply(data_test, function(x) sum(is.na(x)))
+```
+
+
+
+4-We've identified instances with errors in certain observations like 961, 1044, and 1140, where the presence of a pool (PoolQC= Doesn't have) contradicts the recorded pool area (PoolArea>0). Similar inconsistencies occur in other variables across multiple instances. To rectify this, we treated these instances as NA's (both PoolQC and PoolArea in the aforementioned example) and applied our program again to predict and correct these values.
+    
+```{r,include=FALSE}
+###MasVnrType & MasVnrArea erroneous data
+# Check for observations where MasVnrArea is 0 and MasVnrType is not "None"
+sum(data_train$MasVnrArea == 0 & data_train$MasVnrType != "None")
+obs11=which(data_train$MasVnrArea == 0 & data_train$MasVnrType != "None")
+obs11
+#Check for observations where MasVnrType is 'None' and MasVnrArea y >0
+sum(data_train$MasVnrArea > 0 & data_train$MasVnrType == "None")
+obs12=which(!is.na(data_train$MasVnrArea) & data_train$MasVnrArea > 0 & !is.na(data_train$MasVnrType) & data_train$MasVnrType == "None")
+obs12
+###Set the wrong data as NA's
+obs1=c(obs11,obs12)
+data_train[obs1,c("MasVnrArea", "MasVnrType")]
+
+for (i in obs1){
+  data_train[i, "MasVnrType"]<-NA 
+  data_train[i, "MasVnrArea"]<- NA
+}
+```
+
+
+```{r include=FALSE}
+######PoolQC & PoolArea erroneous data 
+# Check for observations where PoolArea is 0 and PoolQC is not "NoPool"
+sum(data_train$PoolArea == 0 & data_train$PoolQC != "Doesn't have")
+obs21=which(data_train$PoolArea == 0 & data_train$PoolQC != "Doesn't have")
+obs21
+#Check for observations whwere PoolQC is ' NoPool' and PoolArea is >0
+sum(data_train$PoolArea > 0 & data_train$PoolQC == "Doesn't have")
+obs22=which(data_train$PoolArea > 0 & data_train$PoolQC == "Doesn't have")
+obs22
+###Set the wrong data as NA's
+obs2=c(obs21,obs22)
+data_train[obs2,c("PoolQC", "PoolArea")]
+
+for (i in obs2){
+  data_train[i, "PoolQC"]<-NA 
+  data_train[i, "PoolArea"]<- NA
+}
+```
+
+
+```{r, include=FALSE}
+######MiscValue & Miscfeature erroneous data 
+#Check for observations where MiscFeature is 'Doesn't have' and MiscValue >0
+sum(data_train$MiscVal > 0 & data_train$MiscFeature == "Doesn't have")
+obs31=which(data_train$MiscVal > 0 & data_train$MiscFeature == "Doesn't have")
+obs31
+# Check for observations where MiscValue is 0 and MiscFeature is not "Doesn't have"
+sum(data_train$MiscVal == 0 & data_train$MiscFeature!= "Doesn't have")
+obs32=which(data_train$MiscVal == 0 & data_train$MiscFeature!= "Doesn't have")
+obs32
+#Set them as NA's
+obs3=c(obs31,obs32)
+data_train[obs3,c('MiscVal','MiscFeature')]
+
+for (i in obs3){
+  data_train[i, "MiscVal"]<-NA 
+  data_train[i, "MiscFeature"]<- NA
+}
+```
+
+
+```{r,include=FALSE}
+#Data errors on garage variables
+# Define the categorical and numerical variables
+categorical_gar <- c("GarageType", "GarageFinish", "GarageQual", "GarageCond")
+numerical_gar <- c("GarageCars", "GarageArea")
+# Initialize a counter for observations that don't meet the conditions
+counter <- 0
+# Initialize a vector to store indices of observations that add one to the counter
+counter_indices <- c()
+# Loop through each observation
+for (i in 1:nrow(data_train)) {
+  # Check condition 1: If any categorical variable is "Doesn't have," all must be, and numerical variables must be 0
+  if (any(data_train[i, categorical_gar] == "Doesn't have") &&
+      all(data_train[i, categorical_gar] == "Doesn't have") &&
+      all(data_train[i, numerical_gar] == 0)) {
+    next  # Move to the next observation
+  }
+  # Check condition 2: If either numerical variable is 0, both must be, and categorical variables must be "Doesn't have"
+  if ((any(data_train[i, numerical_gar] == 0) && all(data_train[i, numerical_gar] == 0)) &&
+      all(data_train[i, categorical_gar] == "Doesn't have")) {
+    next  # Move to the next observation
+  }
+  # New condition: If all categorical variables are not "Doesn't have" and all numerical variables are not 0
+  if (all(data_train[i, categorical_gar] != "Doesn't have") &&
+      all(data_train[i, numerical_gar] != 0)) {
+    next  # Move to the next observation
+  }
+  # If neither condition is met, increment the counter and store the index
+  counter <- counter + 1
+  counter_indices <- c(counter_indices, i)
+}
+
+#Set them as NA's
+for (i in counter_indices){
+  data_train[i,c(numerical_gar,categorical_gar)] = NA
+}
+```
+
+
+
+```{r include=FALSE,eval=FALSE}
+variables_con_NA <- colSums(is.na(data_train)) > 0
+variables_con_NA <- names(variables_con_NA)[variables_con_NA]
+numerical_vars <- names(data_train)[sapply(data_train, is.numeric)]
+multicategorical_vars <- names(data_train)[sapply(data_train, function(x) is.factor(x) && length(levels(x)) >=2 )]
+for (variable in variables_con_NA ) {    
+  
+  
+  observaciones_con_NA <- which(is.na(data_train[[variable]]))
+  
+  for (observacion in observaciones_con_NA) {
+    conteo_categorias <- numeric()
+    
+    for (i in 1:nrow(data_train)) {
+      
+      if (!(i %in% observaciones_con_NA))  {
+        categorias_en_comun <- sum(data_train[i, multicategorical_vars] == data_train[observacion, multicategorical_vars], na.rm = TRUE)
+        
+        conteo_categorias[i] <- categorias_en_comun
+        
+        
+      }
+      else {
+        conteo_categorias[i]=0
+        
+      }
+      
+    }
+    
+    
+    
+    indices_maximos <- which(conteo_categorias == max(conteo_categorias))
+    electrical_values=data_train[indices_maximos,variable]
+    frecuencias <- table(electrical_values)
+    indices_segundos_maximos=which(conteo_categorias == max(conteo_categorias)-1)
+    indices_terceros_maximos=which(conteo_categorias == max(conteo_categorias)-2)
+    electrical_values=data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable]
+    frecuencias <- table(electrical_values)
+    moda <- names(frecuencias)[which.max(frecuencias)]
+    if(variable %in% multicategorical_vars){
+      data_train[observacion,variable]=moda
+      
+    } 
+    else{
+      data_train[observacion,variable]=mean(data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable])
+      
+    }
+    
+    
+    
+    
+    
+    
+    
+    
+    
+  }
+}
+
+```
+
+
+As an example of our program's effectiveness in rectifying errors, we present the updated values of the previously mentioned erroneous instances.
+
+
+```{r}
+data_train[c(961,1044,1140),"PoolQC"]
+data_train[c(961,1044,1140),"PoolArea"]
+
+```
+
+As observed, these instances still lack a pool, yet the PoolArea has been automatically rectified to 0. This exemplifies the potential of our model. It accurately identified that houses with similar categorical values generally do not have a pool, appropriately adjusting both variables.
+
+We proceed similarly with the 'data_test' dataset, as we encountered similar errors.
+
+After this extensive preprocessing, we finally have deeply cleansed data, poised for predicting house prices.
+
+```{r,include=FALSE}
+###MasVnrType & MasVnrArea erroneous data
+# Check for observations where MasVnrArea is 0 and MasVnrType is not "None"
+sum(data_test$MasVnrArea == 0 & data_test$MasVnrType != "None")
+obs11=which(data_test$MasVnrArea == 0 & data_test$MasVnrType != "None")
+obs11
+#Check for observations where MasVnrType is 'None' and MasVnrArea y >0
+sum(data_test$MasVnrArea > 0 & data_test$MasVnrType == "None")
+obs12=which(!is.na(data_test$MasVnrArea) & data_test$MasVnrArea > 0 & !is.na(data_test$MasVnrType) & data_test$MasVnrType == "None")
+obs12
+###Set the wrong data as NA's
+obs1=c(obs11,obs12)
+data_test[obs1,c("MasVnrArea", "MasVnrType")]
+
+for (i in obs1){
+  data_test[i, "MasVnrType"]<-NA 
+  data_test[i, "MasVnrArea"]<- NA
+}
+```
+
+
+
+```{r, include=FALSE}
+######PoolQC & PoolArea erroneous data 
+# Check for observations where PoolArea is 0 and PoolQC is not "NoPool"
+sum(data_test$PoolArea == 0 & data_test$PoolQC != "Doesn't have")
+obs21=which(data_test$PoolArea == 0 & data_test$PoolQC != "Doesn't have")
+obs21
+#Check for observations whwere PoolQC is ' NoPool' and PoolArea is >0
+sum(data_test$PoolArea > 0 & data_test$PoolQC == "Doesn't have")
+obs22=which(data_test$PoolArea > 0 & data_test$PoolQC == "Doesn't have")
+obs22
+###Set the wrong data as NA's
+obs2=c(obs21,obs22)
+data_test[obs2,c("PoolQC", "PoolArea")]
+
+for (i in obs2){
+  data_test[i, "PoolQC"]<-NA 
+  data_test[i, "PoolArea"]<- NA
+}
+```
+
+
+```{r,include=FALSE}
+######MiscValue & Miscfeature erroneous data 
+#Check for observations where MiscFeature is 'Doesn't have' and MiscValue >0
+sum(data_test$MiscVal > 0 & data_test$MiscFeature == "Doesn't have")
+obs31=which(data_test$MiscVal > 0 & data_test$MiscFeature == "Doesn't have")
+obs31
+# Check for observations where MiscValue is 0 and MiscFeature is not "Doesn't have"
+sum(data_test$MiscVal == 0 & data_test$MiscFeature!= "Doesn't have")
+obs32=which(data_test$MiscVal == 0 & data_test$MiscFeature!= "Doesn't have")
+obs32
+#Set them as NA's
+obs3=c(obs31,obs32)
+data_test[obs3,c('MiscVal','MiscFeature')]
+
+for (i in obs3){
+  data_test[i, "MiscVal"]<-NA 
+  data_test[i, "MiscFeature"]<- NA
+}
+```
+
+
+```{r,include=FALSE}
+#Data errors on garage variables
+# Define the categorical and numerical variables
+categorical_gar <- c("GarageType", "GarageFinish", "GarageQual", "GarageCond")
+numerical_gar <- c("GarageCars", "GarageArea")
+# Initialize a counter for observations that don't meet the conditions
+counter <- 0
+# Initialize a vector to store indices of observations that add one to the counter
+counter_indices <- c()
+# Loop through each observation
+for (i in 1:nrow(data_test)) {
+  # Check condition 1: If any categorical variable is "Doesn't have," all must be, and numerical variables must be 0
+  if (any(data_test[i, categorical_gar] == "Doesn't have") &&
+      all(data_test[i, categorical_gar] == "Doesn't have") &&
+      all(data_test[i, numerical_gar] == 0)) {
+    next  # Move to the next observation
+  }
+  # Check condition 2: If either numerical variable is 0, both must be, and categorical variables must be "Doesn't have"
+  if ((any(data_test[i, numerical_gar] == 0) && all(data_test[i, numerical_gar] == 0)) &&
+      all(data_test[i, categorical_gar] == "Doesn't have")) {
+    next  # Move to the next observation
+  }
+  # New condition: If all categorical variables are not "Doesn't have" and all numerical variables are not 0
+  if (all(data_test[i, categorical_gar] != "Doesn't have") &&
+      all(data_test[i, numerical_gar] != 0)) {
+    next  # Move to the next observation
+  }
+  # If neither condition is met, increment the counter and store the index
+  counter <- counter + 1
+  counter_indices <- c(counter_indices, i)
+}
+
+
+#Set them as NA's
+for (i in counter_indices){
+  data_test[i,c(numerical_gar,categorical_gar)] = NA
+}
+```
+
+
+
+```{r, include=FALSE,eval=FALSE}
+variables_con_NA <- colSums(is.na(data_test)) > 0
+variables_con_NA <- names(variables_con_NA)[variables_con_NA]
+numerical_vars <- names(data_test)[sapply(data_test, is.numeric)]
+multicategorical_vars <- names(data_test)[sapply(data_test, function(x) is.factor(x) && length(levels(x)) >=2 )]
+for (variable in variables_con_NA ) {
+
+  
+  observaciones_con_NA <- which(is.na(data_test[[variable]]))
+  
+  for (observacion in observaciones_con_NA) {
+    conteo_categorias <- numeric()
+    
+    for (i in 1:nrow(data_train)) {
+      
+      if (!(i %in% observaciones_con_NA))  {
+        categorias_en_comun <- sum(data_train[i, multicategorical_vars] == data_test[observacion, multicategorical_vars], na.rm = TRUE)
+        
+        conteo_categorias[i] <- categorias_en_comun
+        
+        
+      }
+      else {
+        conteo_categorias[i]=0
+        
+      }
+      
+    }
+    
+    
+    
+    indices_maximos <- which(conteo_categorias == max(conteo_categorias))
+    electrical_values=data_train[indices_maximos,variable]
+    frecuencias <- table(electrical_values)
+    indices_segundos_maximos=which(conteo_categorias == max(conteo_categorias)-1)
+    indices_terceros_maximos=which(conteo_categorias == max(conteo_categorias)-2)
+    electrical_values=data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable]
+    frecuencias <- table(electrical_values)
+    moda <- names(frecuencias)[which.max(frecuencias)]
+    if(variable %in% multicategorical_vars){
+      data_test[observacion,variable]=moda
+      
+    } 
+    else{
+      data_test[observacion,variable]=mean(data_train[c(indices_maximos,indices_segundos_maximos,indices_terceros_maximos),variable])
+      
+    }
+    
+    
+    
+    
+    
+    
+    
+   
+    
+  }
+}
+
+```
+
+
+## Model fitting, variable selection and predictive power
+
+
+To initiate the model fitting process, our initial step was to create a basic model using solely the numeric variables:
+
+
+```{r echo=FALSE}
+numeric <- names(data_train)[sapply(data_train, function(x) is.numeric(x))]
+# remove SalePrice from the list of numeric variables
+numeric <- numeric[1:21]
+binary <- names(data_train)[sapply(data_train, function(x) is.factor(x) && length(levels(x)) == 2)]
+categorical <- names(data_train)[sapply(data_train, function(x) is.factor(x) && length(levels(x)) > 2)]
+
+formula = SalePrice ~ MiscVal
+
+for (var in numeric){
+  formula = update(formula, as.formula(paste(". ~ . +", var)))
+}
+
+model.num = lm(formula, data_train)
+summary(model.num)
+```
+
+As we can see from the summary of the model, there are some coefficients that are returned as NA. This is most likely due to perfect collinearity, which can be confirmed by noting that the problematic variables are in fact the ones that showed high correlations in the correlation plot shown in the begging. The most problematic variables, namely 'TotalBsmtSF' and 'GrLivArea' have been removed from the model.
+
+```{r include=FALSE}
+# which variables produce NAs (multicolinearity)
+names(which(is.na(model.num$coefficients)))
+
+formula = update(formula, as.formula(". ~ . - TotalBsmtSF"))
+formula = update(formula, as.formula(". ~ . - GrLivArea"))
+
+model.num = lm(formula, data_train)
+summary(model.num)
+```
+
+
+This same process can be carried out considering only the categorical variables. 
+
+
+
+```{r include=FALSE}
+formula = SalePrice ~ MiscVal
+
+for (var in categorical){
+  formula = update(formula, as.formula(paste(". ~ . + ", var)))
+}
+
+formula = update(formula, as.formula(paste(". ~ . - MiscVal")))
+
+for (var in binary){
+  formula = update(formula, as.formula(paste(". ~ . + ", var)))
+}
+
+model.cat = lm(formula, data_train)
+
+summary(model.cat)
+
+names(which(is.na(model.cat$coefficients)))
+```
+
+The next step involves consolidating all variables into the same model, which might reveal more variables prone to elimination due to similar issues.
+
+
+```{r include=FALSE}
+formula = SalePrice ~ MiscVal
+
+for (var in numeric){
+  formula = update(formula, as.formula(paste(". ~ . +", var)))
+}
+
+formula = update(formula, as.formula(paste(". ~ . - MiscVal")))
+
+for (var in categorical){
+  formula = update(formula, as.formula(paste(". ~ . + ", var)))
+}
+
+
+
+for (var in binary){
+  formula = update(formula, as.formula(paste(". ~ . + ", var)))
+}
+
+formula = update(formula, as.formula(paste(". ~ . - TotalBsmtSF")))
+formula = update(formula, as.formula(paste(". ~ . - GrLivArea")))
+formula = update(formula, as.formula(". ~ . - BldgType"))
+formula = update(formula, as.formula(". ~ . - Exterior2nd"))
+formula = update(formula, as.formula(". ~ . - GarageCars"))
+
+modall = lm(formula, data_train)
+summary(modall)
+
+names(which(is.na(modall$coefficients)))
+
+```
+
+Once we did this, it seemed that incorporating all variables introduced new issues with singularity (a similar summary was displayed to see this). Therefore, we removed problematic variables again and updated the model accordingly.
+
+```{r include=FALSE}
+formula = update(formula, as.formula(". ~ . - BsmtCond"))
+formula = update(formula, as.formula(". ~ . - BsmtFinType1"))
+formula = update(formula, as.formula(". ~ . - Electrical"))
+formula = update(formula, as.formula(". ~ . - FireplaceQu"))
+formula = update(formula, as.formula(". ~ . - GarageYrBlt"))
+formula = update(formula, as.formula(". ~ . - GarageFinish"))
+formula = update(formula, as.formula(". ~ . - GarageQual"))
+formula = update(formula, as.formula(". ~ . - GarageCond"))
+
+modall = lm(formula, data_train)
+names(which(is.na(modall$coefficients)))
+
+```
+
+It looks like this model has successfully dealt with singularities in the coefficients by removing problematic variables. However, there might be room for improvement by exploring potential interactions between variables. For this purpose, we've developed the following code:
+
+```{r}
+interactions = function(model, df){
+  for (var1 in c(names(df))){
+    for (var2 in c(names(df))){
+      # avoid self-interaction terms (quadratic)
+      if (var1 != var2){
+        # get the formula of the current model
+        current.formula = formula(model)
+        # create the formula with the new added interaction
+        new.formula = update(current.formula, as.formula(paste(". ~ . + ", 
+                                                               var1, ":",var2)))
+        # new.formula = as.formula(paste(as.character(current.formula), "+", var1, ":",
+        #                               var2))
+        # creates and refits the model with the new interactions
+        new.model = lm(new.formula, data=df)
+        # checks if the interaction is significant
+        pvalue = anova(new.model)$`Pr(>F)`[2] 
+        # removes it if not significant
+        if ((pvalue > 0.05) | (is.na(pvalue))){
+          new.formula = update(formula(new.model), as.formula(paste(". ~ . -", 
+                                                                    var1, ":",
+                                                                    var2)))
+          #new.formula = as.formula(paste(as.character(formula(new.model)), "-", 
+          #                               var1, ":", var2))
+          new.model = lm(new.formula, data=df)
+          # new_formula = update(formula(new_model), .~. -var
+        }
+      model = new.model
+      }
+    }
+  }
+}
+```
+
+
+The intention behind this code is to introduce potential interactions one by one into the model and evaluate their significance. Despite multiple attempts, integrating these interactions hasn't shown any noticeable improvement in the model's performance. Additionally, given the extensive number of variables, some with numerous categories, exploring interactions computationally becomes exceedingly challenging, almost rendering their inclusion in the model impractical.
+
+
+
+To estimate the performance in terms of predictive power of the model, we used  cross validation, partitioning the training data set into training and validation partitions and used R function 'lm'.
+
+```{r, echo=FALSE}
+#### estimation of future performance
+set.seed(1212)
+#shuffle
+mod_data=data.frame(data_train)
+
+
+data_shuffle = mod_data[sample(nrow(mod_data)),]
+#split for train validation
+samplesize = round(0.7 * nrow(data_shuffle), 0)
+index = sample( nrow(data_shuffle), size = samplesize)
+performance_train = data_shuffle[index,]
+performance_test = data_shuffle[-index,]
+
+
+
+modall = lm(formula, data=performance_train)
+```
+
+One challenge we might encounter during cross-validation with the model is when fitting on the training partition. Certain categories within variables might be significantly less common and may appear in the validation partition but not in the training partition. To address this, we've created specific functions to manage this issue. We use these functions to generate predictions.
+
+```{r}
+#### my functions
+# find
+damaged_categories=function(toy_model,toy_data){
+  damaged_levels=c()
+  for(i in names(toy_model$xlevels) ){
+    if(! length(toy_model$xlevels[[i]])==length( levels(toy_data[,i])) ){
+      damaged_levels=c(damaged_levels,i)
+    }
+  } 
+  return(damaged_levels)
+}
+# fix
+fix_levels=function(toy_model,toy_data,categories){
+  for(i in categories){
+    toy_model$xlevels[[i]]=levels(toy_data[,i])
+  }
+  return(toy_model)
+}
+```
+
+```{r,warning=FALSE}
+#adjust levels
+needed_levels=damaged_categories(modall,performance_train)
+modall = fix_levels(modall, performance_train, needed_levels)
+
+
+
+##check performance
+# RMSE of train train
+caret::RMSE(pred = exp(modall$fitted.values), obs = exp(performance_train$SalePrice))
+# RMSE of train test
+pred = predict.lm(modall, newdata = performance_test)
+caret::RMSE(pred = exp(pred), obs = exp(performance_test$SalePrice))
+```
+
+So we obtained an RMSE on the testing data of 149061.3. Taking into account the high values of the price of houses, it seems to be an acceptable model. 
+
+The model could potentially be improved further by utilizing the 'stepAIC' function, which employs the Akaike Information Criterion (AIC) to identify the best model from various possibilities comprising different variable combinations.
+
+```{r}
+model.aic = stepAIC(modall, direction="both", trace=0)
+```
+
+To compare the original model with the one obtained through the Akaike Information Criterion, we can also use the ANOVA test:
+
+```{r}
+anova(model.aic, modall)
+```
+
+
+The test clearly indicates that the model obtained through AIC isn't superior to the original one. Additionally, we experimented with simpler models, like eliminating all observations with missing values and making predictions using all variables, among other combinations. Unfortunately, none of these approaches seemed to enhance the previously obtained RMSE.
+
+
+### Best model
+
+According to both the ANOVA test and the validation RMSE, the most optimal model was generated by addressing missing values through our KNN-based algorithm, utilizing all variables except those prone to causing singularities, and omitting the StepAIC and interactions approaches. Thus, this is the model we used to predict the prices of interest (those of data_test) now using  the 100% of train_data. The code that gives our final predictions it then the following:  
+
+```{r warning=FALSE}
+formula = SalePrice ~ MiscVal
+
+for (var in numeric){
+  formula = update(formula, as.formula(paste(". ~ . +", var)))
+}
+
+formula = update(formula, as.formula(paste(". ~ . - MiscVal")))
+
+for (var in categorical){
+  formula = update(formula, as.formula(paste(". ~ . + ", var)))
+}
+
+
+
+for (var in binary){
+  formula = update(formula, as.formula(paste(". ~ . + ", var)))
+}
+
+formula = update(formula, as.formula(paste(". ~ . - TotalBsmtSF")))
+formula = update(formula, as.formula(paste(". ~ . - GrLivArea")))
+formula = update(formula, as.formula(". ~ . - BldgType"))
+formula = update(formula, as.formula(". ~ . - Exterior2nd"))
+formula = update(formula, as.formula(". ~ . - GarageCars"))
+formula = update(formula, as.formula(". ~ . - BsmtCond"))
+formula = update(formula, as.formula(". ~ . - BsmtFinType1"))
+formula = update(formula, as.formula(". ~ . - Electrical"))
+formula = update(formula, as.formula(". ~ . - FireplaceQu"))
+formula = update(formula, as.formula(". ~ . - GarageYrBlt"))
+formula = update(formula, as.formula(". ~ . - GarageFinish"))
+formula = update(formula, as.formula(". ~ . - GarageQual"))
+formula = update(formula, as.formula(". ~ . - GarageCond"))
+
+best.model = lm(formula, data=data_train)
+
+#needed_levels=damaged_categories(best.model, data_test)
+#best.model = fix_levels(best.model, data_test, needed_levels)
+
+#levels(data_test$Alley) = c("Doesn't have", "1", "2")
+levels(data_test$BsmtQual) = levels(data_train$BsmtQual)
+levels(data_test$BsmtCond) = levels(data_train$BsmtCond)
+levels(data_test$BsmtExposure) = levels(data_train$BsmtExposure)
+levels(data_test$BsmtFinType1) = levels(data_train$BsmtFinType1)
+levels(data_test$BsmtFinType2) = levels(data_train$BsmtFinType2)
+levels(data_test$FireplaceQu) = levels(data_train$FireplaceQu)
+levels(data_test$GarageType) = levels(data_train$GarageType)
+levels(data_test$GarageFinish) = levels(data_train$GarageFinish)
+levels(data_test$GarageCond) = levels(data_train$GarageCond)
+levels(data_test$Fence) = levels(data_train$Fence)
+levels(data_test$GarageQual) = levels(data_train$GarageQual)
+levels(data_test$PoolQC) = levels(data_train$PoolQC)
+levels(data_test$MiscFeature) = levels(data_train$MiscFeature)
+
+data_test$MSSubClass[data_test$MSSubClass == 150] = 120
+
+pred = exp(predict.lm(best.model, newdata=data_test))
+#the exponential is because we where working with the logarithm of Salesprice
+```
+
+
+## Goodness of fit, model assumptions 
+
+###  Linearity. 
+
+Residual plots serve as a valuable tool in detecting non-linearity. Any discernible pattern within the residual plot indicates areas for potential model improvement or suggests a deviation from meeting the linearity assumption. 
+
+```{r, warning=FALSE, echo=FALSE}
+plot(best.model, 3)
+```
+In the plot above we can see the standardized residuals against the fitted values of the model. We can see that the model is not quite perfectly linear. This indicates that the linearity hypothesis between the predictors and the sale price is probably not linear for all of them. This should not come as a surprise when looking at the correlation plot shown at the start of this report, in which some numeric variables are blatantly uncorrelated to the sale price of the house. To attain the linearity condition one option would be to try some transformations on the predictors. Another option would be to give up linearity altogether and attempt to fit a General Additive Model on the data instead.
+
+
+
+### Normality
+
+We'll assess the normality of residuals by generating a QQ-plot and conducting the Shapiro-Wilk test to confirm whether the residuals follow a normal distribution.
+
+```{r, echo=FALSE,warning=FALSE}
+
+data_train$residuos = rstandard(best.model)
+shapiro.test(best.model$residuals)
+hist(data_train$residuos, freq=FALSE, breaks="Sturges", col="darkgray", xlab='Residuos estandarizados')
+
+```
+We also plot: 
+
+```{r, warning=FALSE, echo=FALSE}
+plot(best.model, 2)
+```
+
+
+
+Upon initial observation, the QQ-plot doesn't deviate significantly from a normal distribution, particularly in the intermediate quantiles. However, the highly significant results of the Shapiro-Wilk test unmistakably indicate that the model's residuals do not conform to a normal distribution.
+
+### Heterocedasticity. 
+
+The variance of the errors has to be constant. Let's check this by plotting the fitted values versus residuals.
+    
+```{r,echo=FALSE}
+plot(best.model, 1)
+```
+    
+When observing the residuals plotted against the fitted values, a notable concentration around the zero line indicates their mean is close to zero. They display a consistent width band, indicating nearly constant variance. Despite this, it's evident there are outliers, notably observations 524, 633, and 826.
+    
+### Influential observations
+
+
+```{r, warning=FALSE,echo=FALSE}
+plot(best.model, 5)
+```
+
+The leverage plot reveals numerous observations with high influence, with 1171 being particularly notable. Additionally, observations 524 and 826, identified as residual outliers, exhibit a leverage around 0.6, indicating moderate influence within the model.
+
+## Other questions of interest
+
+With such a rich dataset, abundant in both observations and variables, there are some intriguing aspects worth discussing.
+
+For example, by writing the following code and typing in x each variable of interest, we can extract meaningful information.  
+
+```{r }
+ggplot(data_train, aes(y = SalePrice, x = SaleCondition)) +scale_x_discrete("categorias") + 
+  scale_y_continuous("SalePrice") + geom_boxplot(outlier.color="red") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 10))+
+  theme(axis.text.x = element_text(size=20))+ggtitle("Price w.r.t categorica")
+```
+
+More specifically, we observed some interesting trends: Houses with paved road access tend to be more expensive than those with gravel access. Among the priciest properties are those located in neighborhoods like Northridge, Northridge Heights, and Stone Brook. Properties situated near positive off-site features such as parks or greenbelts also command higher prices. Single-family detached buildings tend to have higher prices compared to other types of structures, especially those that are finished as opposed to unfinished houses. Naturally, homes with superior quality and conditions, including the house itself, basement, exterior materials, and garage, tend to be more expensive. Properties with wood shingle roofs are also on the pricier side. On the flip side, homes lacking features like a garage, fireplaces, basement, central air conditioning, or a pool are generally cheaper. Additionally, larger square footage often correlates with higher prices. The number of bathrooms, rooms, and kitchens in a house also tends to influence its price.
+
+Upon examining the model coefficients, we aimed to identify the variable contributing most significantly to the variability in price (indicated by the largest coefficient). As non-binary categorical variables are associated with several coefficients, we opted to use quantiles in evaluating the model's coefficients instead of simply searching for the maximum value.
+
+```{r}
+which(best.model$coefficients > quantile(best.model$coefficients, c(.97)))
+```
+
+After analyzing coefficients above the 97th quantile, it seems that the variable 'RoofMatl,' signifying the material used in the house's roof, contributes most significantly to the sale price variability.
+
